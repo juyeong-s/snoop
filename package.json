@@ -2,7 +2,7 @@
   "name": "snoop",
   "displayName": "Snoop — AI Function Explainer",
   "description": "Hover over unfamiliar code and understand it instantly. AI-powered explanations of what a function actually does — great for legacy code and undocumented libraries.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "wintershin",
   "license": "SEE LICENSE IN LICENSE.md",
   "repository": {
