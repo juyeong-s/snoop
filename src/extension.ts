@@ -246,6 +246,82 @@ function defaultModel(provider: ProviderId): string {
   }
 }
 
+function maxTokensFor(language: string): number {
+  const heavy = [
+    'Korean', 'Japanese', 'Simplified Chinese',
+    'Traditional Chinese', 'Thai', 'Hindi',
+  ];
+  return heavy.includes(language) ? 2000 : 1000;
+}
+
+/** 설정값 → 프롬프트에 넣을 언어 이름. LLM은 영어 명칭을 가장 잘 인식한다. */
+const LANGUAGE_NAMES: Record<string, string> = {
+  en: 'English',
+  ko: 'Korean',
+  ja: 'Japanese',
+  'zh-CN': 'Simplified Chinese',
+  'zh-TW': 'Traditional Chinese',
+  es: 'Spanish',
+  fr: 'French',
+  de: 'German',
+  'pt-BR': 'Brazilian Portuguese',
+  ru: 'Russian',
+  it: 'Italian',
+  vi: 'Vietnamese',
+  id: 'Indonesian',
+  hi: 'Hindi',
+  th: 'Thai',
+  tr: 'Turkish',
+  pl: 'Polish',
+};
+
+/** 설정 UI에 보여줄 이름 */
+const LANGUAGE_LABELS: Record<string, string> = {
+  auto: 'Auto (editor language)',
+  en: 'English',
+  ko: '한국어',
+  ja: '日本語',
+  'zh-CN': '简体中文',
+  'zh-TW': '繁體中文',
+  es: 'Español',
+  fr: 'Français',
+  de: 'Deutsch',
+  'pt-BR': 'Português do Brasil',
+  ru: 'Русский',
+  it: 'Italiano',
+  vi: 'Tiếng Việt',
+  id: 'Bahasa Indonesia',
+  hi: 'हिन्दी',
+  th: 'ไทย',
+  tr: 'Türkçe',
+  pl: 'Polski',
+};
+
+/**
+ * 'auto' 이면 에디터 표시 언어를 따라간다.
+ * vscode.env.language 는 'ko', 'zh-cn' 처럼 소문자로 온다.
+ */
+function resolveLanguage(setting: string): string {
+  if (setting !== 'auto') {
+    return LANGUAGE_NAMES[setting] ?? 'English';
+  }
+
+  const raw = vscode.env.language.toLowerCase();
+  const exact = Object.keys(LANGUAGE_NAMES).find(
+    (code) => code.toLowerCase() === raw
+  );
+  if (exact) {
+    return LANGUAGE_NAMES[exact];
+  }
+
+  // 'pt-pt' → 'pt' 처럼 지역 코드를 떼고 다시 찾는다.
+  const base = raw.split('-')[0];
+  const partial = Object.keys(LANGUAGE_NAMES).find(
+    (code) => code.toLowerCase().split('-')[0] === base
+  );
+  return partial ? LANGUAGE_NAMES[partial] : 'English';
+}
+
 function readConfig(): ProviderConfig {
   const cfg = vscode.workspace.getConfiguration("snoop");
   const provider = cfg.get<ProviderId>("provider", "gemini");
@@ -254,7 +330,7 @@ function readConfig(): ProviderConfig {
     provider,
     model: cfg.get<string>("model", "") || defaultModel(provider),
     baseUrl: cfg.get<string>("baseUrl", "") || DEFAULT_BASE_URLS[provider],
-    language: cfg.get<string>("language", "Korean"),
+    language: resolveLanguage(cfg.get<string>('language', 'auto')),
   };
 }
 
@@ -312,6 +388,8 @@ async function callLLM(
   const controller = new AbortController();
   token.onCancellationRequested(() => controller.abort());
 
+  const maxTokens = maxTokensFor(cfg.language);
+
   let url: string;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -325,7 +403,7 @@ async function callLLM(
     body = {
       systemInstruction: { parts: [{ text: system }] },
       contents: [{ role: "user", parts: [{ text: user }] }],
-      generationConfig: { maxOutputTokens: 2000, temperature: 0.2 },
+      generationConfig: { maxOutputTokens: maxTokens, temperature: 0.2 },
     };
   } else if (cfg.provider === "anthropic") {
     url = `${cfg.baseUrl}/messages`;
@@ -333,7 +411,7 @@ async function callLLM(
     headers["anthropic-version"] = "2023-06-01";
     body = {
       model: cfg.model,
-      max_tokens: 2000,
+      max_tokens: maxTokens,
       system,
       messages: [{ role: "user", content: user }],
     };
@@ -345,7 +423,7 @@ async function callLLM(
     }
     body = {
       model: cfg.model,
-      max_completion_tokens: 2000,
+      max_completion_tokens: maxTokens,
       temperature: 0.2,
       messages: [
         { role: "system", content: system },
@@ -714,6 +792,38 @@ export function activate(context: vscode.ExtensionContext): void {
 
       await context.secrets.store(SECRET_KEY, key);
       cache.clear();
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand('snoop.selectLanguage', async () => {
+      const cfg = vscode.workspace.getConfiguration('snoop');
+      const current = cfg.get<string>('language', 'auto');
+
+      const items = Object.entries(LANGUAGE_LABELS).map(([code, label]) => ({
+        label,
+        description: code === current ? '$(check) current' : undefined,
+        code,
+      }));
+
+      const picked = await vscode.window.showQuickPick(items, {
+        title: 'Snoop: 설명 언어 선택',
+        matchOnDescription: true,
+      });
+
+      if (!picked) {
+        return;
+      }
+
+      await cfg.update(
+        'language',
+        picked.code,
+        vscode.ConfigurationTarget.Global
+      );
+      cache.clear();
+      vscode.window.showInformationMessage(
+        `Snoop: ${picked.label} (으)로 설정했습니다.`
+      );
     })
   );
 

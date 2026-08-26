@@ -2,7 +2,7 @@
   "name": "snoop",
   "displayName": "Snoop — AI Function Explainer",
   "description": "Hover over unfamiliar code and understand it instantly. AI-powered explanations of what a function actually does — great for legacy code and undocumented libraries.",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "publisher": "wintershin",
   "license": "SEE LICENSE IN LICENSE.md",
   "repository": {
@@ -27,6 +27,9 @@
       {
         "command": "snoop.setApiKey",
         "title": "Snoop: Set API Key"
+      },
+      { "command": "snoop.selectLanguage",
+        "title": "Snoop: Select Language"
       },
       {
         "command": "snoop.clearCache",
@@ -61,7 +64,32 @@
         },
         "snoop.language": {
           "type": "string",
-          "default": "Korean"
+          "enum": [
+            "auto", "en", "ko", "ja", "zh-CN", "zh-TW", "es", "fr",
+            "de", "pt-BR", "ru", "it", "vi", "id", "hi", "th", "tr", "pl"
+          ],
+          "enumDescriptions": [
+            "Follow the editor's display language",
+            "English",
+            "한국어 (Korean)",
+            "日本語 (Japanese)",
+            "简体中文 (Simplified Chinese)",
+            "繁體中文 (Traditional Chinese)",
+            "Español (Spanish)",
+            "Français (French)",
+            "Deutsch (German)",
+            "Português do Brasil (Portuguese)",
+            "Русский (Russian)",
+            "Italiano (Italian)",
+            "Tiếng Việt (Vietnamese)",
+            "Bahasa Indonesia",
+            "हिन्दी (Hindi)",
+            "ไทย (Thai)",
+            "Türkçe (Turkish)",
+            "Polski (Polish)"
+          ],
+          "default": "auto",
+          "description": "Language for explanations."
         }
       }
     }
