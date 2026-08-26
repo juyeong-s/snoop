@@ -2,7 +2,7 @@
   "name": "snoop",
   "displayName": "Snoop — AI Function Explainer",
   "description": "Hover over unfamiliar code and understand it instantly. AI-powered explanations of what a function actually does — great for legacy code and undocumented libraries.",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "publisher": "wintershin",
   "license": "SEE LICENSE IN LICENSE.md",
   "repository": {
@@ -13,8 +13,20 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Programming Languages", "Education", "Machine Learning"],
-  "keywords": ["hover", "explain", "ai", "documentation", "legacy code", "onboarding", "codebase"],
+  "categories": [
+    "Programming Languages",
+    "Education",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "hover",
+    "explain",
+    "ai",
+    "documentation",
+    "legacy code",
+    "onboarding",
+    "codebase"
+  ],
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
@@ -46,7 +58,13 @@
         },
         "snoop.provider": {
           "type": "string",
-          "enum": ["gemini", "openai", "anthropic", "groq", "ollama"],
+          "enum": [
+            "gemini",
+            "openai",
+            "anthropic",
+            "groq",
+            "ollama"
+          ],
           "default": "gemini",
           "description": "AI provider. Ollama runs locally and needs no API key."
         },
