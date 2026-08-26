@@ -232,17 +232,17 @@ const DEFAULT_BASE_URLS: Record<ProviderId, string> = {
 function defaultModel(provider: ProviderId): string {
   switch (provider) {
     case "gemini":
-      return "gemini-3-flash-preview";
+      return "openai/gpt-oss-120b";
     case "openai":
       return "gpt-4o-mini";
     case "anthropic":
       return "claude-haiku-4-5-20251001";
     case "groq":
-      return "llama-3.3-70b-versatile";
+      return "openai/gpt-oss-120b";
     case "ollama":
       return "qwen2.5-coder:7b";
     default:
-      return "gemini-3-flash-preview";
+      return "openai/gpt-oss-120b";
   }
 }
 
@@ -345,7 +345,7 @@ async function callLLM(
     }
     body = {
       model: cfg.model,
-      max_tokens: 2000,
+      max_completion_tokens: 2000,
       temperature: 0.2,
       messages: [
         { role: "system", content: system },
@@ -366,7 +366,18 @@ async function callLLM(
   if (!response.ok) {
     const detail = await response.text().catch(() => "");
     log(`HTTP ${response.status}: ${detail.slice(0, 800)}`);
-    throw new Error(describeHttpError(response.status));
+    
+    // 제공자가 보낸 구체적인 메시지를 추출한다.
+    let providerMessage = '';
+    try {
+      const parsed = JSON.parse(detail);
+      providerMessage = parsed?.error?.message ?? parsed?.message ?? '';
+    } catch {
+      // 무시
+    }
+
+    const base = describeHttpError(response.status);
+    throw new Error(providerMessage ? `${base}\n\n${providerMessage}` : base);
   }
 
   const data = (await response.json()) as any;
@@ -415,6 +426,14 @@ function hash(input: string): string {
 function cacheKey(fn: ExtractedFunction): string {
   const cfg = readConfig();
   return hash(`${cfg.provider}|${cfg.model}|${cfg.language}|${fn.source}`);
+}
+
+function detectProvider(key: string): ProviderId | undefined {
+  if (key.startsWith('AIza')) { return 'gemini'; }
+  if (key.startsWith('sk-ant-')) { return 'anthropic'; }
+  if (key.startsWith('gsk_')) { return 'groq'; }
+  if (key.startsWith('sk-')) { return 'openai'; }   // sk-ant- 뒤에 와야 함
+  return undefined;
 }
 
 /* ================================================================== */
@@ -664,14 +683,38 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("snoop.setApiKey", async () => {
-      await context.secrets.delete(SECRET_KEY);
-      const key = await getApiKey(context, true);
-      if (key !== undefined) {
-        cache.clear();
-        vscode.window.showInformationMessage("Snoop: API 키가 저장되었습니다.");
+    vscode.commands.registerCommand('snoop.setApiKey', async () => {
+      const entered = await vscode.window.showInputBox({
+        title: 'Snoop: API key',
+        prompt: 'Gemini(AIza…), OpenAI(sk-…), Anthropic(sk-ant-…), Groq(gsk_…)',
+        password: true,
+        ignoreFocusOut: true,
+      });
+
+      if (!entered || !entered.trim()) {
+        return;
       }
-    }),
+
+      const key = entered.trim();
+      const cfg = vscode.workspace.getConfiguration('snoop');
+      const detected = detectProvider(key);
+
+      if (detected) {
+        await cfg.update('provider', detected, vscode.ConfigurationTarget.Global);
+        // 이전 제공자의 모델명이 남아 있으면 404 가 나므로 비운다.
+        await cfg.update('model', '', vscode.ConfigurationTarget.Global);
+        vscode.window.showInformationMessage(
+          `Snoop: ${detected} 키로 설정했습니다.`
+        );
+      } else {
+        vscode.window.showWarningMessage(
+          'Snoop: 제공자를 자동 인식하지 못했습니다. 설정에서 snoop.provider를 직접 선택하세요.'
+        );
+      }
+
+      await context.secrets.store(SECRET_KEY, key);
+      cache.clear();
+    })
   );
 
   context.subscriptions.push(
