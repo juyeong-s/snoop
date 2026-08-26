@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { SnoopComments, ThreadTarget } from './comments';
 
 /* ================================================================== */
 /* 상수                                                                */
@@ -19,6 +20,9 @@ const SECRET_KEY = "snoop.apiKey";
 
 let output: vscode.OutputChannel;
 
+/** 함수 아래에 결과를 그리는 인라인 위젯 관리자 */
+let comments: SnoopComments;
+
 /** 소스 해시 → 설명. 세션 동안만 유지된다. */
 const cache = new Map<string, string>();
 
@@ -38,7 +42,10 @@ interface ExtractedFunction {
   name: string;
   kind: vscode.SymbolKind;
   uri: vscode.Uri;
+  /** 함수 전체 범위. 본문 추출과 줄 수 계산에 쓴다. */
   range: vscode.Range;
+  /** 함수명이 있는 범위. 결과 위젯을 붙이는 앵커. */
+  nameRange: vscode.Range;
   source: string;
   truncated: boolean;
   languageId: string;
@@ -100,6 +107,17 @@ function symbolRange(symbol: AnySymbol): vscode.Range | undefined {
     return symbol.location.range;
   }
   return undefined;
+}
+
+/**
+ * 심볼 이름만의 범위. DocumentSymbol 은 selectionRange 로 따로 주지만
+ * SymbolInformation 은 전체 범위밖에 없어 그대로 돌려준다.
+ */
+function symbolNameRange(symbol: AnySymbol): vscode.Range | undefined {
+  if ("selectionRange" in symbol && symbol.selectionRange) {
+    return symbol.selectionRange;
+  }
+  return symbolRange(symbol);
 }
 
 function rangeWeight(range: vscode.Range): number {
@@ -191,6 +209,8 @@ async function extractFunctionAt(
     return undefined;
   }
 
+  const nameRange = symbolNameRange(symbol) ?? fullRange;
+
   let source = defDocument.getText(fullRange);
   let truncated = false;
 
@@ -204,6 +224,7 @@ async function extractFunctionAt(
     kind: symbol.kind,
     uri: def.uri,
     range: fullRange,
+    nameRange,
     source,
     truncated,
     languageId: defDocument.languageId,
@@ -232,7 +253,7 @@ const DEFAULT_BASE_URLS: Record<ProviderId, string> = {
 function defaultModel(provider: ProviderId): string {
   switch (provider) {
     case "gemini":
-      return "openai/gpt-oss-120b";
+      return "gemini-3-flash-preview";
     case "openai":
       return "gpt-4o-mini";
     case "anthropic":
@@ -242,7 +263,7 @@ function defaultModel(provider: ProviderId): string {
     case "ollama":
       return "qwen2.5-coder:7b";
     default:
-      return "openai/gpt-oss-120b";
+      return "gemini-3-flash-preview";
   }
 }
 
@@ -377,75 +398,77 @@ function describeHttpError(status: number): string {
   }
 }
 
-async function callLLM(
+/**
+ * LLM 을 스트리밍으로 호출한다. 조각이 도착할 때마다 onChunk 가 불린다.
+ * 반환값은 전체 텍스트(캐시 저장용).
+ */
+async function callLLMStream(
   fn: ExtractedFunction,
   apiKey: string,
   token: vscode.CancellationToken,
+  onChunk: (text: string) => void
 ): Promise<string> {
   const cfg = readConfig();
   const { system, user } = buildPrompt(fn, cfg.language);
+  const maxTokens = maxTokensFor(cfg.language);
 
   const controller = new AbortController();
   token.onCancellationRequested(() => controller.abort());
 
-  const maxTokens = maxTokensFor(cfg.language);
-
   let url: string;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   let body: unknown;
 
-  if (cfg.provider === "gemini") {
+  if (cfg.provider === 'gemini') {
     url =
-      `${cfg.baseUrl}/models/${cfg.model}:generateContent` +
-      `?key=${encodeURIComponent(apiKey)}`;
+      `${cfg.baseUrl}/models/${cfg.model}:streamGenerateContent` +
+      `?alt=sse&key=${encodeURIComponent(apiKey)}`;
     body = {
       systemInstruction: { parts: [{ text: system }] },
-      contents: [{ role: "user", parts: [{ text: user }] }],
+      contents: [{ role: 'user', parts: [{ text: user }] }],
       generationConfig: { maxOutputTokens: maxTokens, temperature: 0.2 },
     };
-  } else if (cfg.provider === "anthropic") {
+  } else if (cfg.provider === 'anthropic') {
     url = `${cfg.baseUrl}/messages`;
-    headers["x-api-key"] = apiKey;
-    headers["anthropic-version"] = "2023-06-01";
+    headers['x-api-key'] = apiKey;
+    headers['anthropic-version'] = '2023-06-01';
     body = {
       model: cfg.model,
       max_tokens: maxTokens,
       system,
-      messages: [{ role: "user", content: user }],
+      stream: true,
+      messages: [{ role: 'user', content: user }],
     };
   } else {
-    // OpenAI 호환: openai / groq / ollama
     url = `${cfg.baseUrl}/chat/completions`;
     if (apiKey) {
-      headers["Authorization"] = `Bearer ${apiKey}`;
+      headers['Authorization'] = `Bearer ${apiKey}`;
     }
     body = {
       model: cfg.model,
       max_completion_tokens: maxTokens,
       temperature: 0.2,
+      stream: true,
       messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
+        { role: 'system', content: system },
+        { role: 'user', content: user },
       ],
     };
   }
 
-  log(`요청: ${cfg.provider} / ${cfg.model}`);
+  log(`스트리밍 요청: ${cfg.provider} / ${cfg.model}`);
 
   const response = await fetch(url, {
-    method: "POST",
+    method: 'POST',
     headers,
     body: JSON.stringify(body),
     signal: controller.signal,
   });
 
   if (!response.ok) {
-    const detail = await response.text().catch(() => "");
+    const detail = await response.text().catch(() => '');
     log(`HTTP ${response.status}: ${detail.slice(0, 800)}`);
-    
-    // 제공자가 보낸 구체적인 메시지를 추출한다.
+
     let providerMessage = '';
     try {
       const parsed = JSON.parse(detail);
@@ -458,24 +481,69 @@ async function callLLM(
     throw new Error(providerMessage ? `${base}\n\n${providerMessage}` : base);
   }
 
-  const data = (await response.json()) as any;
-
-  const text =
-    data?.candidates?.[0]?.content?.parts?.[0]?.text ?? // gemini
-    data?.content?.[0]?.text ?? // anthropic
-    data?.choices?.[0]?.message?.content; // openai 호환
-
-  if (typeof text !== "string" || text.trim() === "") {
-    log(`예상치 못한 응답: ${JSON.stringify(data).slice(0, 800)}`);
-    throw new Error("빈 응답을 받았습니다. 출력 패널을 확인하세요.");
+  if (!response.body) {
+    throw new Error('스트리밍 응답을 받지 못했습니다.');
   }
 
-  return text.trim();
-}
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
 
-/* ================================================================== */
-/* 캐시                                                                */
-/* ================================================================== */
+  let buffer = '';
+  let full = '';
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE 는 빈 줄로 이벤트를 구분한다.
+      const events = buffer.split('\n\n');
+      buffer = events.pop() ?? '';
+
+      for (const event of events) {
+        for (const line of event.split('\n')) {
+          if (!line.startsWith('data:')) {
+            continue;
+          }
+
+          const payload = line.slice(5).trim();
+          if (payload === '' || payload === '[DONE]') {
+            continue;
+          }
+
+          let parsed: any;
+          try {
+            parsed = JSON.parse(payload);
+          } catch {
+            continue;
+          }
+
+          const piece =
+            parsed?.candidates?.[0]?.content?.parts?.[0]?.text ??  // gemini
+            parsed?.delta?.text ??                                 // anthropic
+            parsed?.choices?.[0]?.delta?.content;                  // openai 호환
+
+          if (typeof piece === 'string' && piece !== '') {
+            full += piece;
+            onChunk(piece);
+          }
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  if (full.trim() === '') {
+    throw new Error('빈 응답을 받았습니다. 출력 패널을 확인하세요.');
+  }
+
+  return full.trim();
+}
 
 /**
  * 캐시 키 생성용 해시 (FNV 계열 변형).
@@ -553,6 +621,19 @@ class SnoopHoverProvider implements vscode.HoverProvider {
       if (fn.truncated) {
         md.appendMarkdown("\n\n_※ 함수가 길어 앞부분만 분석했습니다._");
       }
+
+      // 툴팁은 마우스를 떼면 사라지므로, 아래에 고정할 수단을 남긴다.
+      const pinArgs = encodeURIComponent(
+        JSON.stringify({
+          uri: document.uri.toString(),
+          line: position.line,
+          character: position.character,
+        } satisfies ExplainArgs)
+      );
+      md.appendMarkdown(
+        `\n\n[$(pin) 함수 아래에 고정](command:snoop.explain?${pinArgs})`
+      );
+
       return new vscode.Hover(md, wordRange);
     }
 
@@ -564,35 +645,21 @@ class SnoopHoverProvider implements vscode.HoverProvider {
       return new vscode.Hover(md, wordRange);
     }
 
-    // --- 폭주 방지 --------------------------------------------------
-    if (!allowRequest()) {
-      md.appendMarkdown(
-        `**${fn.name}**\n\n_요청이 너무 잦습니다. 잠시 후 다시 시도하세요._`,
-      );
-      return new vscode.Hover(md, wordRange);
-    }
+    const args: ExplainArgs = {
+      uri: document.uri.toString(),
+      line: position.line,
+      character: position.character,
+    };
+    const encoded = encodeURIComponent(JSON.stringify(args));
+    const lines = fn.range.end.line - fn.range.start.line + 1;
 
-    // --- 여기서 await 하면 VS Code 가 로딩 상태를 알아서 그린다 ------
-    try {
-      const explanation = await callLLM(fn, apiKey, token);
-      if (token.isCancellationRequested) {
-        return undefined;
-      }
-      cache.set(key, explanation);
-      md.appendMarkdown(`$(sparkle) **${fn.name}**\n\n${explanation}`);
-      if (fn.truncated) {
-        md.appendMarkdown("\n\n_※ 함수가 길어 앞부분만 분석했습니다._");
-      }
-      return new vscode.Hover(md, wordRange);
-    } catch (error: unknown) {
-      if (error instanceof Error && error.name === "AbortError") {
-        return undefined;
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      log(`오류: ${message}`);
-      md.appendMarkdown(`**${fn.name}**\n\n$(warning) ${message}`);
-      return new vscode.Hover(md, wordRange);
-    }
+    md.appendMarkdown(`**${fn.name}**  \n`);
+    md.appendMarkdown(`_${lines} lines · ${fn.languageId}_\n\n`);
+    md.appendMarkdown(
+      `[$(search) Explain with Snoop](command:snoop.explain?${encoded})`
+    );
+
+    return new vscode.Hover(md, wordRange);
   }
 }
 
@@ -664,15 +731,13 @@ async function getApiKey(
 
 async function explainCommand(
   context: vscode.ExtensionContext,
-  arg?: ExplainArgs,
+  arg?: ExplainArgs
 ): Promise<void> {
   let document: vscode.TextDocument | undefined;
   let position: vscode.Position | undefined;
 
   if (arg?.uri) {
-    document = await vscode.workspace.openTextDocument(
-      vscode.Uri.parse(arg.uri),
-    );
+    document = await vscode.workspace.openTextDocument(vscode.Uri.parse(arg.uri));
     position = new vscode.Position(arg.line, arg.character);
   } else {
     const editor = vscode.window.activeTextEditor;
@@ -683,22 +748,40 @@ async function explainCommand(
   }
 
   if (!document || !position) {
-    vscode.window.showWarningMessage("Snoop: 대상을 찾지 못했습니다.");
+    vscode.window.showWarningMessage('Snoop: 대상을 찾지 못했습니다.');
     return;
   }
 
   const fn = await extractFunctionAt(document, position);
   if (!fn) {
-    vscode.window.showWarningMessage(
-      "Snoop: 이 위치에서 함수를 찾지 못했습니다.",
-    );
+    vscode.window.showWarningMessage('Snoop: 이 위치에서 함수를 찾지 못했습니다.');
     return;
   }
 
+  const lines = fn.range.end.line - fn.range.start.line + 1;
+
+  // 위젯은 정의부가 있는 파일에 붙는다. 호출한 쪽이 아니라 fn.uri 기준이다.
+  // range 의 끝 줄 아래에 그려지므로, 함수명 범위를 넘겨야 시그니처
+  // 바로 밑에 나온다. 전체 범위를 넘기면 닫는 중괄호 아래로 밀린다.
+  const target: ThreadTarget = {
+    uri: fn.uri,
+    range: fn.nameRange,
+    title: fn.name,
+    subtitle: `${lines} lines · ${fn.languageId}`,
+    truncated: fn.truncated,
+    explainArgs: {
+      uri: fn.uri.toString(),
+      line: fn.range.start.line,
+      character: fn.range.start.character,
+    } satisfies ExplainArgs,
+  };
+
   const key = cacheKey(fn);
 
-  if (cache.has(key)) {
-    // await reshowHover(document, position);
+  // 캐시가 있으면 요청 없이 바로 채운다.
+  const cached = cache.get(key);
+  if (cached) {
+    comments.setContent(target, cached);
     return;
   }
 
@@ -707,29 +790,29 @@ async function explainCommand(
     return;
   }
 
+  const { key: threadKey, token } = comments.begin(target);
+
+  if (!allowRequest()) {
+    comments.showError(threadKey, '요청이 너무 잦습니다. 잠시 후 다시 시도하세요.');
+    return;
+  }
+
   inFlight.add(key);
-  // 요청 시작 직후 호버를 띄워 "분석 중" 상태를 보여준다.
-  //   await reshowHover(document, position);
 
   try {
-    const explanation = await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Window,
-        title: `Snoop: ${fn.name}`,
-        cancellable: true,
-      },
-      (_progress, token) => callLLM(fn, apiKey, token),
-    );
+    const full = await callLLMStream(fn, apiKey, token, (piece) => {
+      comments.append(threadKey, piece);
+    });
 
-    cache.set(key, explanation);
-    // await reshowHover(document, position);
+    cache.set(key, full);
+    comments.finish(threadKey, full);
   } catch (error: unknown) {
-    if (error instanceof Error && error.name === "AbortError") {
-      return; // 사용자가 취소함
+    if (error instanceof Error && error.name === 'AbortError') {
+      return; // 사용자가 취소했거나 같은 함수에 새 요청이 시작됨
     }
     const message = error instanceof Error ? error.message : String(error);
     log(`오류: ${message}`);
-    vscode.window.showErrorMessage(`Snoop: ${message}`);
+    comments.showError(threadKey, message);
   } finally {
     inFlight.delete(key);
   }
@@ -746,6 +829,9 @@ function log(message: string): void {
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel("Snoop");
   context.subscriptions.push(output);
+
+  comments = new SnoopComments();
+  context.subscriptions.push(comments);
 
   context.subscriptions.push(
     vscode.languages.registerHoverProvider(
@@ -837,11 +923,29 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
   );
 
-  // 모델이나 언어가 바뀌면 이전 결과가 무의미하므로 캐시를 비운다.
+  context.subscriptions.push(
+    vscode.commands.registerCommand("snoop.dismissComment", (key?: string) => {
+      if (typeof key === "string") {
+        comments.dismiss(key);
+      }
+    }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("snoop.clearComments", () => {
+      const count = comments.clearAll();
+      vscode.window.showInformationMessage(
+        `Snoop: 위젯 개를 닫았습니다.`,
+      );
+    }),
+  );
+
+  // 모델이나 언어가 바뀌면 이전 결과가 무의미하므로 캐시와 위젯을 비운다.
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration("snoop")) {
         cache.clear();
+        comments.clearAll();
       }
     }),
   );

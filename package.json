@@ -46,6 +46,10 @@
       {
         "command": "snoop.clearCache",
         "title": "Snoop: Clear Cache"
+      },
+      {
+        "command": "snoop.clearComments",
+        "title": "Snoop: Clear Inline Results"
       }
     ],
     "configuration": {
