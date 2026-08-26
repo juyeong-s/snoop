@@ -13,9 +13,8 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": [
-    "Other"
-  ],
+  "categories": ["Programming Languages", "Education", "Machine Learning"],
+  "keywords": ["hover", "explain", "ai", "documentation", "legacy code", "onboarding", "codebase"],
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
@@ -42,26 +41,24 @@
       "properties": {
         "snoop.enabled": {
           "type": "boolean",
-          "default": true
+          "default": true,
+          "description": "Enable hover explanations."
         },
         "snoop.provider": {
           "type": "string",
-          "enum": [
-            "gemini",
-            "openai",
-            "anthropic",
-            "groq",
-            "ollama"
-          ],
-          "default": "gemini"
+          "enum": ["gemini", "openai", "anthropic", "groq", "ollama"],
+          "default": "gemini",
+          "description": "AI provider. Ollama runs locally and needs no API key."
         },
         "snoop.model": {
           "type": "string",
-          "default": ""
+          "default": "",
+          "description": "Model name. Leave empty to use the provider's default."
         },
         "snoop.baseUrl": {
           "type": "string",
-          "default": ""
+          "default": "",
+          "description": "Override the API base URL. Leave empty for the default."
         },
         "snoop.language": {
           "type": "string",
