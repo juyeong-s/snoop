@@ -1089,12 +1089,32 @@ export function activate(context: vscode.ExtensionContext): void {
     ),
   );
 
+  // 코멘트 본문의 마크다운 커맨드 링크는 클릭에 반응하지 않는다.
+  // 액션은 전부 제목줄 메뉴(contributes.menus)로 낸다.
   context.subscriptions.push(
-    vscode.commands.registerCommand("snoop.dismissComment", (key?: string) => {
-      if (typeof key === "string") {
-        comments.dismiss(key);
-      }
-    }),
+    vscode.commands.registerCommand(
+      "snoop.closeThread",
+      (thread?: vscode.CommentThread) => {
+        if (thread) {
+          comments.dismissThread(thread);
+        }
+      },
+    ),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "snoop.retryThread",
+      (thread?: vscode.CommentThread) => {
+        const found = thread && comments.entryOf(thread);
+        if (found) {
+          void vscode.commands.executeCommand(
+            "snoop.explain",
+            found.target.explainArgs,
+          );
+        }
+      },
+    ),
   );
 
   context.subscriptions.push(

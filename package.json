@@ -59,6 +59,16 @@
         "command": "snoop.askFollowUp",
         "title": "질문하기",
         "enablement": "!commentIsEmpty"
+      },
+      {
+        "command": "snoop.retryThread",
+        "title": "다시 시도",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "snoop.closeThread",
+        "title": "닫기",
+        "icon": "$(close)"
       }
     ],
     "menus": {
@@ -69,9 +79,29 @@
           "when": "commentController == snoop"
         }
       ],
+      "comments/commentThread/title": [
+        {
+          "command": "snoop.retryThread",
+          "group": "inline@1",
+          "when": "commentController == snoop && commentThread == error"
+        },
+        {
+          "command": "snoop.closeThread",
+          "group": "inline@2",
+          "when": "commentController == snoop"
+        }
+      ],
       "commandPalette": [
         {
           "command": "snoop.askFollowUp",
+          "when": "false"
+        },
+        {
+          "command": "snoop.retryThread",
+          "when": "false"
+        },
+        {
+          "command": "snoop.closeThread",
           "when": "false"
         }
       ]

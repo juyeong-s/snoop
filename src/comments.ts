@@ -278,6 +278,17 @@ export class SnoopComments {
     }
   }
 
+  /** 제목줄 메뉴에서 넘어온 스레드를 닫는다. */
+  public dismissThread(thread: vscode.CommentThread): void {
+    const found = this.entryOf(thread);
+    if (found) {
+      this.dismiss(found.key);
+    } else {
+      // 우리가 모르는 스레드라도 사용자가 닫으라고 했으면 닫아준다.
+      thread.dispose();
+    }
+  }
+
   /** 열려 있는 위젯 전부 닫는다. 닫은 개수를 반환한다. */
   public clearAll(): number {
     const count = this.entries.size;
@@ -314,6 +325,9 @@ export class SnoopComments {
     // 답변이 끝난 뒤에만 후속 질문을 받는다. 스트리밍 중에는 입력창을 닫는다.
     // 에러 뒤에도 열어둬야 같은 질문을 다시 던질 수 있다.
     entry.thread.canReply = state === 'done' || state === 'error';
+
+    // 제목줄 메뉴의 when 절이 참조한다. "다시 시도"는 에러일 때만 띄운다.
+    entry.thread.contextValue = state;
   }
 
   private toComment(
@@ -340,18 +354,13 @@ export class SnoopComments {
     if (isLast && state === 'loading') {
       md.appendMarkdown('$(sync~spin) 분석 중…');
     } else if (isLast && state === 'error') {
-      md.appendMarkdown(`$(error) ${turn.text}\n\n`);
-      md.appendMarkdown(this.footer(entry, false));
+      md.appendMarkdown(`$(error) ${turn.text}`);
     } else {
       md.appendMarkdown(isLast && state === 'streaming' ? `${turn.text}▌` : turn.text);
 
       // 잘린 안내는 최초 설명에만 붙인다. 후속 답변과는 무관하다.
       if (index === 0 && entry.target.truncated) {
         md.appendMarkdown('\n\n_※ 함수가 길어 앞부분만 분석했습니다._');
-      }
-
-      if (isLast && state === 'done') {
-        md.appendMarkdown(`\n\n${this.footer(entry, true)}`);
       }
     }
 
@@ -360,31 +369,5 @@ export class SnoopComments {
       mode: vscode.CommentMode.Preview,
       author: { name: 'Snoop' },
     };
-  }
-
-  /**
-   * 하단 액션 링크. 데코레이션과 달리 위젯 안에서 클릭이 된다.
-   *
-   * 완료 상태에는 재분석 링크를 넣지 않는다. 결과가 캐시돼 있어서
-   * 다시 눌러도 재요청 없이 같은 텍스트가 그대로 나온다.
-   * 반면 에러는 캐시되지 않으므로 재시도가 실제로 다시 요청한다.
-   *
-   * 코디콘($(refresh) 등)은 워크벤치 CSS 가 세로 정렬을 잡는데 확장에서
-   * 손댈 수 없다. 본문과 같은 폰트로 렌더되는 텍스트 글리프를 쓰면
-   * 베이스라인에 그대로 앉으므로 정렬이 어긋나지 않는다.
-   */
-  private footer(entry: Entry, done: boolean): string {
-    const dismiss = encodeURIComponent(JSON.stringify(entry.key));
-    const close = `[✕ 닫기](command:snoop.dismissComment?${dismiss})`;
-
-    if (done) {
-      return `---\n\n${close}`;
-    }
-
-    const explain = encodeURIComponent(JSON.stringify(entry.target.explainArgs));
-    return (
-      `---\n\n` +
-      `[↻ 다시 시도](command:snoop.explain?${explain}) · ${close}`
-    );
   }
 }
