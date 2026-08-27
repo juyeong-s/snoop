@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { SnoopComments, ThreadTarget } from './comments';
+import { SnoopComments, ThreadTarget, Turn } from './comments';
 
 /* ================================================================== */
 /* 상수                                                                */
@@ -382,6 +382,103 @@ function buildPrompt(fn: ExtractedFunction, language: string) {
   return { system, user };
 }
 
+/** 제공자 공통 대화 표현. 각 provider 포맷으로는 callLLMStream 에서 변환한다. */
+interface ChatTurn {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+interface LLMRequest {
+  system: string;
+  turns: ChatTurn[];
+  maxTokens: number;
+}
+
+/** 최초 설명 요청 */
+function initialRequest(fn: ExtractedFunction): LLMRequest {
+  const cfg = readConfig();
+  const { system, user } = buildPrompt(fn, cfg.language);
+  return {
+    system,
+    turns: [{ role: 'user', content: user }],
+    maxTokens: maxTokensFor(cfg.language),
+  };
+}
+
+/**
+ * 후속 질문 요청.
+ *
+ * 최초 설명은 호버 툴팁 크기에 맞추라는 제약이 걸려 있지만, 후속 질문은
+ * "더 자세히 듣고 싶다"는 의도로 던지는 것이므로 그 제약을 풀고
+ * 토큰 예산도 두 배로 준다.
+ */
+function followUpRequest(
+  target: ThreadTarget,
+  history: readonly Turn[],
+  question: string,
+): LLMRequest {
+  const cfg = readConfig();
+
+  const system =
+    `You are answering a developer's follow-up question about a function ` +
+    `they are reading. Respond in ${cfg.language}.\n\n` +
+    `Rules:\n` +
+    `- Answer only what was asked. Do not re-explain the whole function.\n` +
+    `- Be concrete: name the actual identifiers, branches and values in the code.\n` +
+    `- Short paragraphs and bullets. Include code snippets only when they clarify.\n` +
+    `- If the code does not contain the answer, say so plainly instead of guessing.\n` +
+    `- Finish your last sentence. Never trail off.`;
+
+  // 첫 턴으로 함수 본문을 다시 넣어야 모델이 무엇을 보고 답하는지 알 수 있다.
+  const turns: ChatTurn[] = [
+    {
+      role: 'user',
+      content:
+        `Language: ${target.languageId}\n` +
+        `Symbol: ${target.title}\n` +
+        (target.truncated ? 'Note: source was truncated.\n' : '') +
+        `\n\u0060\u0060\u0060${target.languageId}\n${target.source}\n\u0060\u0060\u0060`,
+    },
+  ];
+
+  for (const turn of history) {
+    turns.push({
+      role: turn.role === 'user' ? 'user' : 'assistant',
+      content: turn.text,
+    });
+  }
+
+  turns.push({ role: 'user', content: question });
+
+  return {
+    system,
+    turns: mergeAdjacent(turns),
+    maxTokens: maxTokensFor(cfg.language) * 2,
+  };
+}
+
+/**
+ * 같은 role 이 연속되면 하나로 합친다.
+ *
+ * 최초 설명이 실패해 이력이 비면 함수 본문 턴과 질문 턴이 모두 user 라
+ * 연속된다. anthropic 은 user/assistant 교대를 강제하므로 그대로 보내면
+ * 400 이 난다.
+ */
+function mergeAdjacent(turns: readonly ChatTurn[]): ChatTurn[] {
+  const merged: ChatTurn[] = [];
+
+  for (const turn of turns) {
+    const last = merged[merged.length - 1];
+    if (last && last.role === turn.role) {
+      last.content += `\n\n${turn.content}`;
+    } else {
+      merged.push({ ...turn });
+    }
+  }
+
+  return merged;
+}
+
 function describeHttpError(status: number): string {
   switch (status) {
     case 401:
@@ -403,14 +500,13 @@ function describeHttpError(status: number): string {
  * 반환값은 전체 텍스트(캐시 저장용).
  */
 async function callLLMStream(
-  fn: ExtractedFunction,
+  request: LLMRequest,
   apiKey: string,
   token: vscode.CancellationToken,
   onChunk: (text: string) => void
 ): Promise<string> {
   const cfg = readConfig();
-  const { system, user } = buildPrompt(fn, cfg.language);
-  const maxTokens = maxTokensFor(cfg.language);
+  const { system, turns, maxTokens } = request;
 
   const controller = new AbortController();
   token.onCancellationRequested(() => controller.abort());
@@ -425,7 +521,11 @@ async function callLLMStream(
       `?alt=sse&key=${encodeURIComponent(apiKey)}`;
     body = {
       systemInstruction: { parts: [{ text: system }] },
-      contents: [{ role: 'user', parts: [{ text: user }] }],
+      // gemini 는 assistant 대신 model 을 쓴다.
+      contents: turns.map((turn) => ({
+        role: turn.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: turn.content }],
+      })),
       generationConfig: { maxOutputTokens: maxTokens, temperature: 0.2 },
     };
   } else if (cfg.provider === 'anthropic') {
@@ -437,7 +537,7 @@ async function callLLMStream(
       max_tokens: maxTokens,
       system,
       stream: true,
-      messages: [{ role: 'user', content: user }],
+      messages: turns,
     };
   } else {
     url = `${cfg.baseUrl}/chat/completions`;
@@ -449,10 +549,7 @@ async function callLLMStream(
       max_completion_tokens: maxTokens,
       temperature: 0.2,
       stream: true,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
+      messages: [{ role: 'system', content: system }, ...turns],
     };
   }
 
@@ -769,6 +866,8 @@ async function explainCommand(
     title: fn.name,
     subtitle: `${lines} lines · ${fn.languageId}`,
     truncated: fn.truncated,
+    source: fn.source,
+    languageId: fn.languageId,
     explainArgs: {
       uri: fn.uri.toString(),
       line: fn.range.start.line,
@@ -800,7 +899,7 @@ async function explainCommand(
   inFlight.add(key);
 
   try {
-    const full = await callLLMStream(fn, apiKey, token, (piece) => {
+    const full = await callLLMStream(initialRequest(fn), apiKey, token, (piece) => {
       comments.append(threadKey, piece);
     });
 
@@ -815,6 +914,66 @@ async function explainCommand(
     comments.showError(threadKey, message);
   } finally {
     inFlight.delete(key);
+  }
+}
+
+/**
+ * 위젯 답글 입력창에서 들어온 후속 질문을 처리한다.
+ *
+ * 최초 설명과 달리 결과를 캐시하지 않는다. 캐시는 함수 소스 해시로만
+ * 키를 잡기 때문에 대화 맥락을 담을 수 없다.
+ */
+async function askFollowUpCommand(
+  context: vscode.ExtensionContext,
+  reply?: vscode.CommentReply,
+): Promise<void> {
+  const question = reply?.text?.trim();
+  if (!reply || !question) {
+    return;
+  }
+
+  const found = comments.entryOf(reply.thread);
+  if (!found) {
+    vscode.window.showWarningMessage('Snoop: 대화를 찾지 못했습니다.');
+    return;
+  }
+
+  const apiKey = await getApiKey(context, true);
+  if (apiKey === undefined) {
+    return;
+  }
+
+  // 질문을 붙이기 전의 대화여야 한다. beginFollowUp 이 질문 턴을 추가한다.
+  const history = comments.history(found.key);
+
+  const token = comments.beginFollowUp(found.key, question);
+  if (!token) {
+    return;
+  }
+
+  if (!allowRequest()) {
+    comments.showError(
+      found.key,
+      '요청이 너무 잦습니다. 잠시 후 다시 시도하세요.',
+    );
+    return;
+  }
+
+  try {
+    const full = await callLLMStream(
+      followUpRequest(found.target, history, question),
+      apiKey,
+      token,
+      (piece) => comments.append(found.key, piece),
+    );
+    comments.finish(found.key, full);
+  } catch (error: unknown) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return; // 사용자가 취소했거나 위젯이 닫힘
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    log(`후속 질문 오류: ${message}`);
+    comments.showError(found.key, message);
   }
 }
 
@@ -921,6 +1080,13 @@ export function activate(context: vscode.ExtensionContext): void {
         `Snoop: 캐시 ${count}건을 지웠습니다.`,
       );
     }),
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "snoop.askFollowUp",
+      (reply?: vscode.CommentReply) => askFollowUpCommand(context, reply),
+    ),
   );
 
   context.subscriptions.push(

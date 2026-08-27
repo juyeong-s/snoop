@@ -14,14 +14,16 @@
     "vscode": "^1.85.0"
   },
   "categories": [
+    "AI",
     "Programming Languages",
     "Education",
-    "Machine Learning"
+    "Machine Learning",
+    "Debuggers"
   ],
   "keywords": [
-    "hover",
-    "explain",
     "ai",
+    "explain",
+    "hover",
     "documentation",
     "legacy code",
     "onboarding",
@@ -52,8 +54,28 @@
       {
         "command": "snoop.clearComments",
         "title": "Snoop: Clear Inline Results"
+      },
+      {
+        "command": "snoop.askFollowUp",
+        "title": "질문하기",
+        "enablement": "!commentIsEmpty"
       }
     ],
+    "menus": {
+      "comments/commentThread/context": [
+        {
+          "command": "snoop.askFollowUp",
+          "group": "inline",
+          "when": "commentController == snoop"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "snoop.askFollowUp",
+          "when": "false"
+        }
+      ]
+    },
     "configuration": {
       "title": "Snoop",
       "properties": {
