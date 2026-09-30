@@ -2,6 +2,8 @@
 
 Hover over unfamiliar code and understand it instantly. AI-powered explanations of what a function actually does — great for legacy code and undocumented libraries.
 
+![Snoop demo](images/demo/snoop-demo-en.gif)
+
 ---
 
 ## What it does
